@@ -131,6 +131,52 @@ async function mockEndpoints(page: Page, options: {
     }
   });
 
+  // Update user endpoint
+  await page.route(/\/api\/user\/\d+$/, async (route) => {
+    const method = route.request().method();
+    if (method === 'PUT') {
+      const body = route.request().postDataJSON();
+      if (loggedInUser) {
+        loggedInUser = { ...loggedInUser, name: body.name, email: body.email };
+        await route.fulfill({
+          json: {
+            user: { id: loggedInUser.id, name: loggedInUser.name, email: loggedInUser.email, roles: loggedInUser.roles },
+            token: 'test-token',
+          },
+        });
+      } else {
+        await route.fulfill({ status: 401, json: { message: 'unauthorized' } });
+      }
+    } else if (method === 'DELETE') {
+      await route.fulfill({ json: { message: 'user deleted' } });
+    } else {
+      await route.continue();
+    }
+  });
+
+  // List users endpoint (admin only)
+  await page.route(/\/api\/user(\?.*)?$/, async (route) => {
+    const method = route.request().method();
+    if (method === 'GET') {
+      if (loggedInUser && loggedInUser.roles.some(r => r.role === Role.Admin)) {
+        await route.fulfill({
+          json: {
+            users: [
+              { id: 1, name: '常用名字', email: 'a@jwt.com', roles: [{ role: 'admin' }] },
+              { id: 3, name: 'Kai Chen', email: 'd@jwt.com', roles: [{ role: 'diner' }] },
+              { id: 4, name: 'pizza franchisee', email: 'f@jwt.com', roles: [{ role: 'diner' }, { role: 'franchisee' }] },
+            ],
+            more: false,
+          },
+        });
+      } else {
+        await route.fulfill({ status: 403, json: { message: 'unauthorized' } });
+      }
+    } else {
+      await route.continue();
+    }
+  });
+
   // Menu endpoint
   await page.route('*/**/api/order/menu', async (route) => {
     await route.fulfill({ json: menuItems });
@@ -352,6 +398,40 @@ test('view order history on diner dashboard', async ({ page }) => {
   await expect(page.getByText('Here is your history')).toBeVisible();
 });
 
+test('update user from diner dashboard', async ({ page }) => {
+  await mockEndpoints(page);
+  await page.goto('/');
+  
+  await loginUser(page, 'd@jwt.com', 'diner');
+  await page.getByRole('link', { name: 'KC' }).click();
+  
+  await page.getByRole('button', { name: 'Edit' }).click();
+  await expect(page.locator('h3')).toContainText('Edit user');
+  
+  await page.getByRole('textbox').first().fill('Kai Chen Updated');
+  await page.getByRole('button', { name: 'Update' }).click();
+  
+  await page.waitForSelector('[role="dialog"].hidden', { state: 'attached' });
+  
+  await expect(page.getByRole('main')).toContainText('Kai Chen Updated');
+});
+
+test('open and close edit dialog without changes', async ({ page }) => {
+  await mockEndpoints(page);
+  await page.goto('/');
+  
+  await loginUser(page, 'd@jwt.com', 'diner');
+  await page.getByRole('link', { name: 'KC' }).click();
+  
+  await page.getByRole('button', { name: 'Edit' }).click();
+  await expect(page.locator('h3')).toContainText('Edit user');
+  
+  await page.getByRole('button', { name: 'Update' }).click();
+  await page.waitForSelector('[role="dialog"].hidden', { state: 'attached' });
+  
+  await expect(page.getByRole('main')).toContainText('Kai Chen');
+});
+
 // ===== ORDER TESTS =====
 
 test('view menu', async ({ page }) => {
@@ -552,6 +632,40 @@ test('admin closes store', async ({ page }) => {
   // Click close on a store
   await page.getByRole('row', { name: /SLC/ }).getByRole('button', { name: 'Close' }).click();
   await expect(page.getByText('Sorry to see you go')).toBeVisible();
+});
+
+test('admin views user list', async ({ page }) => {
+  await mockEndpoints(page);
+  await page.goto('/');
+  
+  await loginUser(page, 'a@jwt.com', 'admin');
+  await page.getByRole('link', { name: 'Admin' }).click();
+  
+  await expect(page.getByText('Users')).toBeVisible();
+  await expect(page.getByText('常用名字')).toBeVisible();
+  await expect(page.getByText('Kai Chen')).toBeVisible();
+});
+
+test('admin filters user list', async ({ page }) => {
+  await mockEndpoints(page);
+  await page.goto('/');
+  
+  await loginUser(page, 'a@jwt.com', 'admin');
+  await page.getByRole('link', { name: 'Admin' }).click();
+  
+  await page.getByPlaceholder('Filter users').fill('Kai');
+  await page.getByRole('button', { name: 'Submit' }).nth(1).click();
+});
+
+test('admin deletes user', async ({ page }) => {
+  await mockEndpoints(page);
+  await page.goto('/');
+  
+  await loginUser(page, 'a@jwt.com', 'admin');
+  await page.getByRole('link', { name: 'Admin' }).click();
+  
+  // Find and click delete on a user
+  await page.getByRole('row', { name: /Kai Chen/ }).getByRole('button', { name: 'Delete' }).click();
 });
 
 // ===== DOCS TESTS =====
